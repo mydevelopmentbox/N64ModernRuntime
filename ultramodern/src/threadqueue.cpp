@@ -31,6 +31,25 @@ void ultramodern::thread_queue_insert(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(O
     debug_printf("\n");
 }
 
+bool ultramodern::thread_queue_to_front(RDRAM_ARG PTR(PTR(OSThread)) queue_, int id) {
+    PTR(OSThread)* head = queue_to_ptr(PASS_RDRAM queue_);
+    PTR(OSThread)* link = head;
+    while (*link != NULLPTR) {
+        OSThread* th = TO_PTR(OSThread, *link);
+        if (th->id == id) {
+            if (link != head) {
+                PTR(OSThread) found = *link;
+                *link = th->next;
+                th->next = *head;
+                *head = found;
+            }
+            return true;
+        }
+        link = &th->next;
+    }
+    return false;
+}
+
 PTR(OSThread) ultramodern::thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue_) {
     PTR(OSThread)* queue = queue_to_ptr(PASS_RDRAM queue_);
     PTR(OSThread) ret = *queue;
@@ -42,15 +61,20 @@ PTR(OSThread) ultramodern::thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue_)
 
 bool ultramodern::thread_queue_remove(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) t_) {
     debug_printf("[Thread Queue] Removing thread %d from queue 0x%08X\n", TO_PTR(OSThread, t_)->id, (uintptr_t)queue_);
+    // A running thread is not on a list. osSetThreadPri reads the queue field
+    // again after this returns, so the field has to stay as it was.
+    if (queue_ == NULLPTR) {
+        return false;
+    }
 
-    PTR(PTR(OSThread)) cur = queue_;
-    while (cur != NULLPTR) {
-        PTR(OSThread)* cur_ptr = queue_to_ptr(PASS_RDRAM queue_);
-        if (*cur_ptr == t_) {
-            *cur_ptr = TO_PTR(OSThread, *cur_ptr)->next;
+    PTR(OSThread)* link = queue_to_ptr(PASS_RDRAM queue_);
+    while (*link != NULLPTR) {
+        OSThread* th = TO_PTR(OSThread, *link);
+        if (*link == t_) {
+            *link = th->next;
             return true;
         }
-        cur = TO_PTR(OSThread, *cur_ptr)->next;
+        link = &th->next;
     }
 
     return false;

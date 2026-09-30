@@ -39,6 +39,21 @@ void ultramodern::set_entrypoint_thread() {
     ::is_entrypoint_thread = true;
 }
 
+void ultramodern::bind_host_thread(uint8_t* rdram, int32_t thread_addr, OSId id, OSPri pri) {
+    OSThread* thread = TO_PTR(OSThread, thread_addr);
+    thread->next = NULLPTR;
+    thread->queue = NULLPTR;
+    thread->priority = pri;
+    thread->id = id;
+    thread->state = OSThreadState::RUNNING;
+    thread->flags = 0;
+    thread->sp = 0;
+    thread->context = new UltraThreadContext{};
+    thread_self = thread_addr;
+    ::is_game_thread = true;
+    ::is_entrypoint_thread = true;
+}
+
 bool ultramodern::is_entrypoint_thread() {
     return ::is_entrypoint_thread;
 }
@@ -165,12 +180,33 @@ void resume_thread(OSThread* t) {
 }
 
 void run_next_thread(RDRAM_ARG1) {
-    if (ultramodern::thread_queue_empty(PASS_RDRAM ultramodern::running_queue)) {
-        throw std::runtime_error("No threads left to run!\n");
+    static int empty_logs = 0;
+    while (ultramodern::thread_queue_empty(PASS_RDRAM ultramodern::running_queue)) {
+        if (empty_logs < 12) {
+            OSThread* self = TO_PTR(OSThread, ultramodern::this_thread());
+            std::printf("empty %d\n", self->id);
+            std::fflush(stdout);
+            empty_logs++;
+        }
+        ultramodern::wait_for_external_message(PASS_RDRAM1);
     }
 
     OSThread* to_run = TO_PTR(OSThread, ultramodern::thread_queue_pop(PASS_RDRAM ultramodern::running_queue));
     debug_printf("[Scheduling] Resuming execution of thread %d\n", to_run->id);
+    static int next_logs = 0;
+    if (next_logs < 60) {
+        std::printf("next %d pri %d\n", to_run->id, to_run->priority);
+        std::fflush(stdout);
+        next_logs++;
+    }
+    if (to_run->id == 1) {
+        static int intro_resume_logs = 0;
+        if (intro_resume_logs < 16) {
+            intro_resume_logs++;
+            std::fprintf(stderr, "intro resumed\n");
+            std::fflush(stderr);
+        }
+    }
     to_run->context->running.signal();
 }
 

@@ -5,6 +5,10 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "ultramodern/ultramodern.hpp"
 
 #include "recomp.h"
@@ -186,6 +190,11 @@ void recomp::overlays::read_patch_data(uint8_t* rdram, gpr patch_data_address) {
 }
 
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size) {
+    printf("load_overlays rom %08X size %08X sections %zu\n", rom, size, sections_info.num_code_sections);
+    if (sections_info.num_code_sections > 0) {
+        printf("section0 rom %08X size %08X\n", sections_info.code_sections[0].rom_addr, sections_info.code_sections[0].size);
+    }
+    fflush(stdout);
     // Search for the first section that's included in the loaded rom range
     // Sections were sorted by `init_overlays` so we can use the bounds functions
     auto lower = std::lower_bound(&sections_info.code_sections[0], &sections_info.code_sections[sections_info.num_code_sections], rom,
@@ -198,6 +207,10 @@ extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size) {
             return addr < entry.size + entry.rom_addr;
         }
     );
+    // A section that starts before the window and extends past it makes lower > upper.
+    if (lower > upper) {
+        std::swap(lower, upper);
+    }
     // Load the overlays that were found
     for (auto it = lower; it != upper; ++it) {
         load_overlay(std::distance(&sections_info.code_sections[0], it), it->rom_addr - rom + ram_addr);
@@ -364,8 +377,15 @@ recomp_func_t* recomp::overlays::get_func_by_section_rom_function_vram(uint32_t 
 extern "C" recomp_func_t * get_function(int32_t addr) {
     auto func_find = func_map.find(addr);
     if (func_find == func_map.end()) {
-        fprintf(stderr, "Failed to find function at 0x%08X\n", addr);
-        assert(false);
+        fprintf(stderr, "Failed to find function at 0x%08X caller %p self %p\n", addr, __builtin_return_address(0), reinterpret_cast<void*>(&get_function));
+#ifdef _WIN32
+        void* frames[12] = {};
+        USHORT count = CaptureStackBackTrace(0, 12, frames, nullptr);
+        fprintf(stderr, "lookup base %p\n", GetModuleHandleA(nullptr));
+        for (USHORT frame = 0; frame < count; frame++) {
+            fprintf(stderr, "lookup frame %u %p\n", frame, frames[frame]);
+        }
+#endif
         std::exit(EXIT_FAILURE);
     }
     return func_find->second;

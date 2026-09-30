@@ -47,6 +47,9 @@ constexpr PTR(PTR(OSThread)) running_queue = (PTR(PTR(OSThread)))-1;
 
 void thread_queue_insert(RDRAM_ARG PTR(PTR(OSThread)) queue, PTR(OSThread) toadd);
 PTR(OSThread) thread_queue_pop(RDRAM_ARG PTR(PTR(OSThread)) queue);
+// Move a queued thread to the head so the next pop runs it. Strict priority
+// would leave the match receiver behind the scheduler forever.
+bool thread_queue_to_front(RDRAM_ARG PTR(PTR(OSThread)) queue_, int id);
 bool thread_queue_remove(RDRAM_ARG PTR(PTR(OSThread)) queue_, PTR(OSThread) t_);
 bool thread_queue_empty(RDRAM_ARG PTR(PTR(OSThread)) queue);
 PTR(OSThread) thread_queue_peek(RDRAM_ARG PTR(PTR(OSThread)) queue);
@@ -74,6 +77,7 @@ struct MessageQueueControl {
 void set_message_queue_control(const MessageQueueControl& mqc);
 void enqueue_external_message_src(PTR(OSMesgQueue) mq, OSMesg msg, bool jam, EventMessageSource src);
 void enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool jam, bool requeue_if_blocked);
+void drain_external_messages(RDRAM_ARG1);
 void wait_for_external_message(RDRAM_ARG1);
 void wait_for_external_message_timed(RDRAM_ARG1, u32 millis);
 
@@ -97,6 +101,7 @@ void set_native_thread_name(const std::string& name);
 void set_native_thread_priority(ThreadPriority pri);
 PTR(OSThread) this_thread();
 void set_entrypoint_thread();
+void bind_host_thread(uint8_t* rdram, int32_t thread_addr, OSId id, OSPri pri);
 bool is_entrypoint_thread();
 bool is_game_thread();
 void submit_rsp_task(RDRAM_ARG PTR(OSTask) task);

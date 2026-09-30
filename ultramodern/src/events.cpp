@@ -134,6 +134,14 @@ static struct {
         PTR(OSMesgQueue) mq = NULLPTR;
         OSMesg msg = (OSMesg)0;
     } si;
+    struct {
+        PTR(OSMesgQueue) mq = NULLPTR;
+        OSMesg msg = (OSMesg)0;
+    } vi_event;
+    struct {
+        PTR(OSMesgQueue) mq = NULLPTR;
+        OSMesg msg = (OSMesg)0;
+    } counter;
     // The same message queue may be used for multiple events, so share a mutex for all of them
     std::mutex message_mutex;
     uint8_t* rdram;
@@ -165,15 +173,30 @@ extern "C" void osSetEventMesg(RDRAM_ARG OSEvent event_id, PTR(OSMesgQueue) mq_,
         case OS_EVENT_SI:
             events_context.si.msg = msg;
             events_context.si.mq = mq_;
+            break;
+        case OS_EVENT_VI:
+            events_context.vi_event.msg = msg;
+            events_context.vi_event.mq = mq_;
+            break;
+        case OS_EVENT_COUNTER:
+            events_context.counter.msg = msg;
+            events_context.counter.mq = mq_;
+            break;
     }
 }
 
 extern "C" void osViSetEvent(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, u32 retrace_count) {
     std::lock_guard lock{ events_context.message_mutex };
-    ViState* next_state = events_context.vi.get_next_state();
-    next_state->mq = mq_;
-    next_state->msg = msg;
-    next_state->retrace_count = retrace_count;
+    // The VI register swap waits for a mode. Deliver retrace messages on the current
+    // state as well, so a game can wait on VI before osViSetMode.
+    if (retrace_count == 0) {
+        retrace_count = 1;
+    }
+    for (ViState& state : events_context.vi.states) {
+        state.mq = mq_;
+        state.msg = msg;
+        state.retrace_count = static_cast<int>(retrace_count);
+    }
 }
 
 uint64_t total_vis = 0;
@@ -246,6 +269,9 @@ void vi_thread_func() {
                     // The worst case scenario is that the game misses a VI message and has to wait a little longer for the next. 
                     ultramodern::enqueue_external_message_src(cur_state->mq, cur_state->msg, false, ultramodern::EventMessageSource::Vi);
                 }
+                if (events_context.vi_event.mq != NULLPTR) {
+                    ultramodern::enqueue_external_message_src(events_context.vi_event.mq, events_context.vi_event.msg, false, ultramodern::EventMessageSource::Vi);
+                }
                 remaining_retraces = cur_state->retrace_count;
             }
             if (events_context.ai.mq != NULLPTR) {
@@ -263,13 +289,23 @@ void vi_thread_func() {
 void sp_complete() {
     uint8_t* rdram = events_context.rdram;
     std::lock_guard lock{ events_context.message_mutex };
-    ultramodern::enqueue_external_message_src(events_context.sp.mq, events_context.sp.msg, false, ultramodern::EventMessageSource::Sp);
+    // Retraces share this queue and are disposable. An RSP completion is not:
+    // if the queue is full, keep the message and deliver it once a slot opens.
+    ultramodern::enqueue_external_message(events_context.sp.mq, events_context.sp.msg, true, true);
 }
 
 void dp_complete() {
     uint8_t* rdram = events_context.rdram;
     std::lock_guard lock{ events_context.message_mutex };
-    ultramodern::enqueue_external_message_src(events_context.dp.mq, events_context.dp.msg, false, ultramodern::EventMessageSource::Dp);
+    static int logged = 0;
+    if (logged < 4) {
+        logged++;
+        std::fprintf(stderr, "dp complete mq %08X msg %08X\n",
+            static_cast<unsigned>(events_context.dp.mq), static_cast<unsigned>(events_context.dp.msg));
+        std::fflush(stderr);
+    }
+    // Jam ahead of queued retraces, and retry if the scheduler queue is still full.
+    ultramodern::enqueue_external_message(events_context.dp.mq, events_context.dp.msg, true, true);
 }
 
 void task_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_ready) {
@@ -364,11 +400,6 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
         if (events_context.action_queue.wait_dequeue_timed(action, 1ms)) {
             // Determine the action type and act on it
             if (const auto* task_action = std::get_if<SpTaskAction>(&action)) {
-                // Tell the game that the RSP completed instantly. This will allow it to queue other task types, but it won't
-                // start another graphics task until the RDP is also complete. Games usually preserve the RSP inputs until the RDP
-                // is finished as well, so sending this early shouldn't be an issue in most cases.
-                // If this causes issues then the logic can be replaced with responding to yield requests.
-                sp_complete();
                 ultramodern::measure_input_latency();
 
                 PTR(u64) displaylist = task_action->task.t.data_ptr;
@@ -378,7 +409,11 @@ void gfx_thread_func(uint8_t* rdram, moodycamel::LightweightSemaphore* thread_re
                 renderer_context->send_dl(&task_action->task);
                 [[maybe_unused]] auto renderer_end = std::chrono::high_resolution_clock::now();
 
+                // DP must be visible to the guest before SP. The scheduler arms the
+                // swap on DP while the task is still busy, then performs it on SP.
+                // Posting SP first lets a guest pump consume only that message.
                 dp_complete();
+                sp_complete();
                 // TODO hook the parsed event up to the actual parsing point when a callback is added to RT64.
                 ultramodern::extensions::on_displaylist_parsed(displaylist);
                 ultramodern::extensions::on_displaylist_completed(displaylist);
