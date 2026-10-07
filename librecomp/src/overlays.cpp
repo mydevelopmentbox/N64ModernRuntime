@@ -377,16 +377,20 @@ recomp_func_t* recomp::overlays::get_func_by_section_rom_function_vram(uint32_t 
 extern "C" recomp_func_t * get_function(int32_t addr) {
     auto func_find = func_map.find(addr);
     if (func_find == func_map.end()) {
-        fprintf(stderr, "Failed to find function at 0x%08X caller %p self %p\n", addr, __builtin_return_address(0), reinterpret_cast<void*>(&get_function));
-#ifdef _WIN32
-        void* frames[12] = {};
-        USHORT count = CaptureStackBackTrace(0, 12, frames, nullptr);
-        fprintf(stderr, "lookup base %p\n", GetModuleHandleA(nullptr));
-        for (USHORT frame = 0; frame < count; frame++) {
-            fprintf(stderr, "lookup frame %u %p\n", frame, frames[frame]);
+        func_find = func_map.find(addr | static_cast<int32_t>(0x80000000));
+    }
+    if (func_find == func_map.end()) {
+        func_find = func_map.find(addr & 0x1FFFFFFF);
+    }
+    if (func_find == func_map.end()) {
+        static int missing_func_logs = 0;
+        if (missing_func_logs < 24) {
+            missing_func_logs++;
+            fprintf(stderr, "Warning: Unresolved indirect call to 0x%08X (caller %p), returning no-op stub\n", addr, __builtin_return_address(0));
+            fflush(stderr);
         }
-#endif
-        std::exit(EXIT_FAILURE);
+        static auto noop_func = [](uint8_t*, recomp_context*) {};
+        return noop_func;
     }
     return func_find->second;
 }
